@@ -22,13 +22,14 @@ CARD_SOFT = "#FCFCFD"
 TEXT = "#191F28"
 SUB = "#8B95A1"
 LINE = "#E5E8EB"
+BLACK = "#111111"
 
 # 건물별 고정 색상
 BUILDING_COLORS = {
-    "A동": "#8B80F9",  # 보라
-    "B동": "#62C4A3",  # 민트
-    "C동": "#F3A76F",  # 오렌지
-    "D동": "#7DB2F8",  # 블루
+    "A동": "#8B80F9",
+    "B동": "#62C4A3",
+    "C동": "#F3A76F",
+    "D동": "#7DB2F8",
 }
 
 # 부위별 색상
@@ -39,50 +40,75 @@ CATEGORY_COLORS = {
     "설비": "#7DB2F8",
 }
 
+# calculator.py와 실제 맞춤
 AGING_WEIGHTS_DISPLAY = {
     "외벽": 25,
-    "창호": 15,
-    "배관": 30,
-    "설비": 30,
+    "창호": 25,
+    "배관": 25,
+    "설비": 25,
 }
 
-# =========================
-# 카테고리 / 비용 추정 설정
-# =========================
 BUILDING_TYPE_OPTIONS = ["아파트", "학교", "병원", "데이터센터"]
 
-# 발표용 대략 단가 모델 (원/㎡)
-# 실제 실무 적용 시 표준품셈 + 표준시장단가 + 수량산출서 기준으로 조정
-CATEGORY_BASE_COST_PER_M2 = {
+# =========================
+# 카테고리별 유효물량/단가 모델
+# =========================
+CATEGORY_MODEL = {
     "아파트": {
-        "외벽": 180000,
-        "창호": 220000,
-        "배관": 260000,
-        "설비": 300000,
+        "ext_wall_factor": 0.42,
+        "window_ratio_to_wall": 0.28,
+        "pipe_factor": 0.55,
+        "equip_factor": 0.70,
+        "unit_cost": {
+            "외벽": 180000,
+            "창호": 420000,
+            "배관": 240000,
+            "설비": 280000,
+        },
     },
     "학교": {
-        "외벽": 200000,
-        "창호": 240000,
-        "배관": 290000,
-        "설비": 330000,
+        "ext_wall_factor": 0.50,
+        "window_ratio_to_wall": 0.35,
+        "pipe_factor": 0.50,
+        "equip_factor": 0.65,
+        "unit_cost": {
+            "외벽": 190000,
+            "창호": 430000,
+            "배관": 250000,
+            "설비": 300000,
+        },
     },
     "병원": {
-        "외벽": 260000,
-        "창호": 300000,
-        "배관": 360000,
-        "설비": 430000,
+        "ext_wall_factor": 0.48,
+        "window_ratio_to_wall": 0.30,
+        "pipe_factor": 0.85,
+        "equip_factor": 0.95,
+        "unit_cost": {
+            "외벽": 240000,
+            "창호": 520000,
+            "배관": 340000,
+            "설비": 420000,
+        },
     },
     "데이터센터": {
-        "외벽": 320000,
-        "창호": 360000,
-        "배관": 450000,
-        "설비": 620000,
+        "ext_wall_factor": 0.38,
+        "window_ratio_to_wall": 0.08,
+        "pipe_factor": 0.90,
+        "equip_factor": 1.15,
+        "unit_cost": {
+            "외벽": 260000,
+            "창호": 650000,
+            "배관": 420000,
+            "설비": 620000,
+        },
     },
 }
 
-# 간접비/일반관리비/부가가치세를 단순 반영한 계수
 INDIRECT_COST_MULTIPLIER = 1.18
 
+# =========================
+# 공통 함수
+# =========================
 def safe_round(v):
     try:
         return round(float(v), 1)
@@ -164,6 +190,11 @@ def part_badge_html(label: str) -> str:
     ">{label} 우선</span>
     """
 
+def block_title_html(title: str) -> str:
+    return f"""
+    <div class="block-title-bar">{title}</div>
+    """
+
 def render_html_table(df: pd.DataFrame):
     headers = df.columns.tolist()
     rows_html = ""
@@ -228,13 +259,13 @@ def estimate_repair_scope_ratio(score: float, urgency: float) -> float:
     u = float(urgency)
 
     if s < 25:
-        base = 0.04
+        base = 0.05
     elif s < 50:
         base = 0.12
     elif s < 80:
-        base = 0.26
+        base = 0.24
     else:
-        base = 0.45
+        base = 0.40
 
     urgency_boost = 0.0
     if u >= 80:
@@ -242,11 +273,23 @@ def estimate_repair_scope_ratio(score: float, urgency: float) -> float:
     elif u >= 50:
         urgency_boost = 0.05
 
-    ratio = min(base + urgency_boost, 0.70)
-    return ratio
+    return min(base + urgency_boost, 0.65)
 
 def estimate_building_cost(category: str, area_m2: float, row_age, row_urg):
-    unit_map = CATEGORY_BASE_COST_PER_M2[category]
+    model = CATEGORY_MODEL[category]
+    unit_map = model["unit_cost"]
+
+    ext_wall_area = area_m2 * model["ext_wall_factor"]
+    window_area = ext_wall_area * model["window_ratio_to_wall"]
+    pipe_qty_area = area_m2 * model["pipe_factor"]
+    equip_qty_area = area_m2 * model["equip_factor"]
+
+    effective_qty = {
+        "외벽": ext_wall_area,
+        "창호": window_area,
+        "배관": pipe_qty_area,
+        "설비": equip_qty_area,
+    }
 
     parts = {
         "외벽": {
@@ -275,14 +318,15 @@ def estimate_building_cost(category: str, area_m2: float, row_age, row_urg):
         urgency = info["urgency"]
         unit_cost = unit_map[part]
         repair_ratio = estimate_repair_scope_ratio(score, urgency)
-
-        direct_cost = area_m2 * unit_cost * repair_ratio
+        qty = effective_qty[part]
+        direct_cost = qty * unit_cost * repair_ratio
         total_direct += direct_cost
 
         rows.append({
             "부위": part,
             "노후도": round(score, 1),
             "긴급도": round(urgency, 1),
+            "유효물량(㎡)": round(qty, 1),
             "기준단가(원/㎡)": int(unit_cost),
             "보수범위비율": round(repair_ratio * 100, 1),
             "예상공사비(직접공사비)": direct_cost,
@@ -292,11 +336,23 @@ def estimate_building_cost(category: str, area_m2: float, row_age, row_urg):
     total_cost = total_direct * INDIRECT_COST_MULTIPLIER
     cost_per_m2 = total_cost / area_m2 if area_m2 > 0 else 0.0
 
+    assumptions = {
+        "외벽 유효면적": ext_wall_area,
+        "창호 유효면적": window_area,
+        "배관 유효물량": pipe_qty_area,
+        "설비 유효물량": equip_qty_area,
+        "외벽계수": model["ext_wall_factor"],
+        "창면적비": model["window_ratio_to_wall"],
+        "배관계수": model["pipe_factor"],
+        "설비계수": model["equip_factor"],
+    }
+
     return {
         "detail_df": detail_df,
         "direct_cost": total_direct,
         "total_cost": total_cost,
         "cost_per_m2": cost_per_m2,
+        "assumptions": assumptions,
     }
 
 # =========================
@@ -318,53 +374,70 @@ body {{
 }}
 
 .block-container {{
-    padding-top: 3rem !important;
+    padding-top: 2.2rem !important;
     padding-bottom: 2.6rem;
-    padding-left: 2.4rem;
-    padding-right: 2.4rem;
+    padding-left: 2.2rem;
+    padding-right: 2.2rem;
     max-width: 100%;
 }}
 
 .main-title-wrap {{
     position: relative;
     z-index: 999;
-    background: {BG};
-    padding-top: 1.5rem;
-    padding-bottom: 1.1rem;
-    margin-bottom: 0.45rem;
+    background: #111111;
+    border-radius: 28px;
+    padding: 28px 30px 24px 30px;
+    margin-bottom: 0.85rem;
     overflow: visible !important;
+    box-shadow: 0 6px 20px rgba(17, 24, 39, 0.10);
 }}
 
 .main-title {{
-    font-size: 3rem;
+    font-size: 2.6rem;
     font-weight: 900;
-    color: {TEXT} !important;
-    line-height: 1.35 !important;
-    letter-spacing: -0.045em;
+    color: #FFFFFF !important;
+    line-height: 1.3 !important;
+    letter-spacing: -0.04em;
     margin: 0;
     padding: 0;
     display: block;
     white-space: normal !important;
     word-break: keep-all;
     overflow: visible !important;
-    -webkit-text-fill-color: {TEXT} !important;
+    -webkit-text-fill-color: #FFFFFF !important;
 }}
 
 .sub-title {{
-    font-size: 1.08rem;
-    color: {SUB} !important;
-    margin-top: 0.9rem;
-    margin-bottom: 0.2rem;
-    line-height: 1.6;
-    -webkit-text-fill-color: {SUB} !important;
+    font-size: 1.02rem;
+    color: #E5E7EB !important;
+    margin-top: 0.75rem;
+    margin-bottom: 0;
+    line-height: 1.65;
+    -webkit-text-fill-color: #E5E7EB !important;
 }}
 
 .top-note {{
-    font-size: 0.98rem;
+    font-size: 0.96rem;
     color: {SUB} !important;
     margin-bottom: 1.15rem;
     line-height: 1.6;
     -webkit-text-fill-color: {SUB} !important;
+}}
+
+.block-title-bar {{
+    width: 100%;
+    background: #111111;
+    color: #FFFFFF;
+    font-size: 1.08rem;
+    font-weight: 800;
+    line-height: 1.4;
+    border-radius: 18px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+    box-sizing: border-box;
+    white-space: normal;
+    word-break: keep-all;
+    overflow: visible;
 }}
 
 div[data-baseweb="tab-list"] {{
@@ -394,6 +467,7 @@ button[aria-selected="true"] {{
     padding: 24px 26px;
     box-shadow: 0 3px 14px rgba(17, 24, 39, 0.04);
     margin-bottom: 24px;
+    overflow: hidden;
 }}
 
 .summary-card {{
@@ -430,14 +504,6 @@ button[aria-selected="true"] {{
     color: {SUB};
     font-size: 14px;
     line-height: 1.8;
-}}
-
-.section-title {{
-    font-size: 1.18rem;
-    font-weight: 800;
-    color: {TEXT};
-    margin-bottom: 1rem;
-    letter-spacing: -0.01em;
 }}
 
 .custom-table {{
@@ -561,7 +627,7 @@ st.markdown(
     """
     <div class="main-title-wrap">
         <div class="main-title">건물 노후화 자동 평가 대시보드</div>
-        <div class="sub-title">건물별 노후도, 긴급도, 상세 비교를 한 번에 볼 수 있는 분석 대시보드</div>
+        <div class="sub-title">건물별 노후도, 긴급도, 예상 보수비를 한 화면에서 확인할 수 있는 평가 프로그램</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -570,9 +636,8 @@ st.markdown(
 st.markdown(
     f"""
     <div class="top-note">
-        외벽 {AGING_WEIGHTS_DISPLAY["외벽"]}% · 창호 {AGING_WEIGHTS_DISPLAY["창호"]}% ·
-        배관 {AGING_WEIGHTS_DISPLAY["배관"]}% · 설비 {AGING_WEIGHTS_DISPLAY["설비"]}% 가중치 적용 —
-        점수가 높을수록 노후화·긴급도 심각
+        종합 노후도 반영비율 — 외벽 {AGING_WEIGHTS_DISPLAY["외벽"]}% · 창호 {AGING_WEIGHTS_DISPLAY["창호"]}% ·
+        배관 {AGING_WEIGHTS_DISPLAY["배관"]}% · 설비 {AGING_WEIGHTS_DISPLAY["설비"]}%
     </div>
     """,
     unsafe_allow_html=True
@@ -632,22 +697,22 @@ summary_df["순위"] = summary_df.index + 1
 summary_df["등급"] = summary_df["노후도 종합(100)"].apply(aging_grade)
 
 # =========================
-# 추가 설정: 건물 카테고리 / 연면적
+# 카테고리 / 연면적 설정
 # =========================
 st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">카테고리 및 보수비 산정 기준</div>', unsafe_allow_html=True)
-
+st.markdown(block_title_html("카테고리 및 보수비 산정 기준"), unsafe_allow_html=True)
 st.markdown(
     """
     <div class="cost-note">
-        건물별 카테고리와 연면적을 입력하면, 노후도·긴급도 점수를 바탕으로 대략적인 보수비를 자동 추정합니다.
-        기존 결과값 디자인은 유지하고, 견적 결과만 추가로 표시합니다.
+        연면적 전체를 모든 공종에 그대로 곱하지 않고, 건물 용도별 유효면적·유효물량 계수를 반영해 예상 보수비를 계산합니다.
     </div>
     """,
     unsafe_allow_html=True
 )
 
 building_settings = {}
+default_area = 3000.0
+
 for building in summary_df["건물명"].tolist():
     with st.expander(f"{building} 설정", expanded=(building == summary_df["건물명"].tolist()[0])):
         c1, c2 = st.columns(2)
@@ -662,7 +727,7 @@ for building in summary_df["건물명"].tolist():
             area_m2 = st.number_input(
                 f"{building} 연면적(㎡)",
                 min_value=100.0,
-                value=3000.0,
+                value=default_area,
                 step=100.0,
                 key=f"area_{building}",
             )
@@ -687,8 +752,6 @@ for building in summary_df["건물명"].tolist():
     area_m2 = float(building_settings[building]["area_m2"])
 
     cost_result = estimate_building_cost(category, area_m2, row_age, row_urg)
-    detail_df = cost_result["detail_df"].copy()
-
     cost_detail_map[building] = cost_result
 
     cost_rows.append({
@@ -736,7 +799,7 @@ with tab1:
 
     with c1:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">종합 노후도 순위</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("종합 노후도 순위"), unsafe_allow_html=True)
 
         fig_rank = go.Figure()
         fig_rank.add_trace(
@@ -775,7 +838,7 @@ with tab1:
 
     with c2:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">건물별 항목 레이더</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("건물별 항목 레이더"), unsafe_allow_html=True)
 
         radar_categories = ["외벽", "창호", "배관", "설비"]
         fig_radar = go.Figure()
@@ -816,9 +879,8 @@ with tab1:
         st.plotly_chart(fig_radar, use_container_width=True, config={"displaylogo": False})
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 추가: 예상 보수비 비교
     st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">예상 보수비 비교</div>', unsafe_allow_html=True)
+    st.markdown(block_title_html("예상 보수비 비교"), unsafe_allow_html=True)
 
     fig_cost = go.Figure()
     fig_cost.add_trace(
@@ -857,14 +919,6 @@ with tab1:
     cost_table_df["㎡당 보수비(원/㎡)"] = cost_table_df["㎡당 보수비(원/㎡)"].map(format_krw)
     render_html_table(cost_table_df)
 
-    st.markdown(
-        """
-        <div class="cost-note">
-            ※ 본 견적은 대시보드용 개략 추정치입니다. 실제 공사비는 수량산출, 공법, 시공범위, 현장여건, 표준시장단가 적용 여부에 따라 달라질 수 있습니다.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
     st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================
@@ -875,7 +929,7 @@ with tab2:
 
     with c1:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">분야별 노후화도 비교</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("분야별 노후화도 비교"), unsafe_allow_html=True)
 
         long_aging = result_df.melt(
             id_vars="건물명",
@@ -927,7 +981,7 @@ with tab2:
 
     with c2:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">노후도 히트맵</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("노후도 히트맵"), unsafe_allow_html=True)
 
         heat_df = result_df[["건물명", "외벽(100)", "창호(100)", "배관(100)", "설비(100)"]].copy()
         heat_df = heat_df.rename(columns={
@@ -970,7 +1024,7 @@ with tab2:
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">노후도 상세표</div>', unsafe_allow_html=True)
+    st.markdown(block_title_html("노후도 상세표"), unsafe_allow_html=True)
 
     aging_table_df = summary_df[["건물명", "외벽(100)", "창호(100)", "배관(100)", "설비(100)", "노후도 종합(100)", "등급"]].copy()
     aging_table_df = aging_table_df.rename(columns={
@@ -996,7 +1050,7 @@ with tab3:
 
     with c1:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">가장 시급한 부위</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("가장 시급한 부위"), unsafe_allow_html=True)
 
         urgent_part_counts = urgency_df["가장 시급"].value_counts().reset_index()
         urgent_part_counts.columns = ["부위", "개수"]
@@ -1025,7 +1079,7 @@ with tab3:
 
     with c2:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">노후도 VS 긴급도</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("노후도 VS 긴급도"), unsafe_allow_html=True)
 
         bubble_df = summary_df.copy()
         bubble_df["버블크기"] = bubble_df["긴급도 최대값"] + 20
@@ -1054,7 +1108,7 @@ with tab3:
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">긴급도 상세표</div>', unsafe_allow_html=True)
+    st.markdown(block_title_html("긴급도 상세표"), unsafe_allow_html=True)
 
     urgency_table_df = urgency_df[["건물명", "외벽 긴급도(100)", "창호 긴급도(100)", "배관 긴급도(100)", "설비 긴급도(100)", "가장 시급"]].copy()
     urgency_table_df["등급"] = urgency_df["긴급도 최대값"].apply(urgency_grade)
@@ -1098,17 +1152,20 @@ with tab4:
     selected_cost_result = cost_detail_map[selected_building]
     selected_total_cost = selected_cost_result["total_cost"]
     selected_cost_per_m2 = selected_cost_result["cost_per_m2"]
+    assumptions = selected_cost_result["assumptions"]
 
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">노후화도</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("노후화도"), unsafe_allow_html=True)
         st.markdown(
             f"""
             <div style="font-size:56px; font-weight:800; color:{TEXT}; line-height:1;">{selected_aging:.1f}</div>
             <div style="margin:6px 0 14px 0;">{badge_html(selected_age_grade)}</div>
-            <div style="color:{SUB}; font-size:16px;">종합 노후화도 — 외벽 25% · 창호 15% · 배관 30% · 설비 30%</div>
+            <div style="color:{SUB}; font-size:16px;">
+                종합 노후화도 — 외벽 25% · 창호 25% · 배관 25% · 설비 25%
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -1129,12 +1186,15 @@ with tab4:
 
     with c2:
         st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">긴급도</div>', unsafe_allow_html=True)
+        st.markdown(block_title_html("긴급도"), unsafe_allow_html=True)
         st.markdown(
             f"""
             <div style="font-size:56px; font-weight:800; color:{TEXT}; line-height:1;">{selected_urg:.1f}</div>
             <div style="margin:6px 0 14px 0;">{badge_html(selected_urg_grade)}</div>
-            <div style="color:{SUB}; font-size:16px;">최고 긴급도 — 가장 시급한 부위: <span style="color:{CATEGORY_COLORS[row_urg['가장 시급']]}; font-weight:700;">{row_urg['가장 시급']}</span></div>
+            <div style="color:{SUB}; font-size:16px;">
+                최고 긴급도 — 가장 시급한 부위:
+                <span style="color:{CATEGORY_COLORS[row_urg['가장 시급']]}; font-weight:700;">{row_urg['가장 시급']}</span>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -1153,9 +1213,8 @@ with tab4:
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 추가: 카테고리 / 예상 보수비
     st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">카테고리별 예상 보수비</div>', unsafe_allow_html=True)
+    st.markdown(block_title_html("카테고리별 예상 보수비"), unsafe_allow_html=True)
 
     cc1, cc2, cc3 = st.columns(3, gap="large")
     with cc1:
@@ -1181,22 +1240,33 @@ with tab4:
             cost_card_html(
                 "㎡당 예상 보수비",
                 format_krw(selected_cost_per_m2),
-                "카테고리별 기준단가 + 점수 반영"
+                "유효물량 반영 기준"
             ),
             unsafe_allow_html=True
         )
 
+    st.markdown(
+        f"""
+        <div class="cost-note">
+            외벽계수 {assumptions['외벽계수']:.2f} · 창면적비 {assumptions['창면적비']:.2f} ·
+            배관계수 {assumptions['배관계수']:.2f} · 설비계수 {assumptions['설비계수']:.2f}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     detail_cost_df = selected_cost_result["detail_df"].copy()
+    detail_cost_df["유효물량(㎡)"] = detail_cost_df["유효물량(㎡)"].map(lambda x: f"{x:,.1f}")
     detail_cost_df["기준단가(원/㎡)"] = detail_cost_df["기준단가(원/㎡)"].map(lambda x: f"{int(x):,}")
     detail_cost_df["보수범위비율"] = detail_cost_df["보수범위비율"].map(lambda x: f"{x:.1f}%")
     detail_cost_df["예상공사비(직접공사비)"] = detail_cost_df["예상공사비(직접공사비)"].map(format_eok)
 
-    render_html_table(detail_cost_df.rename(columns={"부위": "건물"}).rename(columns={"건물": "부위"}))
+    render_html_table(detail_cost_df)
 
     st.markdown(
         """
         <div class="cost-note">
-            ※ 이 값은 발표용 개략 견적입니다. 실제 공사비는 현장조사, 수량산출, 자재사양, 장비투입, 공정계획, 표준시장단가 적용 여부에 따라 달라집니다.
+            유효물량 기준: 외벽은 연면적 대비 외벽계수, 창호는 외벽면적 × 창면적비, 배관·설비는 용도별 시스템 계수를 적용
         </div>
         """,
         unsafe_allow_html=True
